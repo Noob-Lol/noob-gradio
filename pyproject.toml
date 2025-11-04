@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "A lightweight async alternative to gradio_client without heavy dependencies."
 authors = [{ name = "Noob" }]
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9",
@@ -18,9 +18,7 @@ keywords = ["gradio", "async", "client", "huggingface", "api"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Framework :: AsyncIO",
-    "License :: OSI Approved :: MIT License",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Internet :: WWW/HTTP :: Client"
 ]
 
 [project.urls]
