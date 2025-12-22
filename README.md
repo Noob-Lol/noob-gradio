@@ -46,6 +46,8 @@ from noob_gradio import Client
 async def main():
     session = aiohttp.ClientSession()
     client = Client("url", session=session)
+    # added in 1.0.2, will also work
+    client.set_session(session)
     result = await client.predict(kwargs)
     print(result)
     # in on_close or similar event/function, at exit

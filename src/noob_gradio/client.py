@@ -54,7 +54,9 @@ class Client:
         self.session = session
         self.hf_token = hf_token
         self._space_cache = {}
-        self.headers = headers or session.headers if session else {"User-Agent": "noob_gradio/1.0"}
+        self.headers = headers or {"User-Agent": "noob_gradio/1.0"}
+        if session:
+            self.headers.update(session.headers)
         if self.hf_token:
             self.headers["x-hf-authorization"] = f"Bearer {self.hf_token}"
         self.download_dir = (
@@ -78,13 +80,18 @@ class Client:
             )
 
     async def connect(self):
-        if self._provide_session:
+        if not self.session and self._provide_session:
             self.session = aiohttp.ClientSession()
 
     async def close(self):
-        if self._provide_session and self.session:
+        if self.session and self._provide_session:
             await self.session.close()
             self.session = None
+
+    def set_session(self, session: aiohttp.ClientSession):
+        self.session = session
+        self.headers.update(session.headers)
+        self._provide_session = False
 
     async def __aenter__(self):
         await self.connect()
