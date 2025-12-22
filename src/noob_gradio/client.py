@@ -46,13 +46,15 @@ class Client:
         hf_token: str | None = None,
         headers: dict[str, str] | None = None,
         download_files: str | Path | Literal[False] = DEFAULT_TEMP_DIR,
+        session: aiohttp.ClientSession | None = None,
     ):
         # Support both full URLs and repo names like "black-forest-labs/FLUX.1-schnell"
         self.base = self._resolve_base(src) if src else None
-        self.session = None
+        self._provide_session = session is None
+        self.session = session
         self.hf_token = hf_token
         self._space_cache = {}
-        self.headers = headers or {"User-Agent": "noob_gradio/1.0"}
+        self.headers = headers or session.headers if session else {"User-Agent": "noob_gradio/1.0"}
         if self.hf_token:
             self.headers["x-hf-authorization"] = f"Bearer {self.hf_token}"
         self.download_dir = (
@@ -76,10 +78,11 @@ class Client:
             )
 
     async def connect(self):
-        self.session = aiohttp.ClientSession(headers=self.headers)
+        if self._provide_session:
+            self.session = aiohttp.ClientSession()
 
     async def close(self):
-        if self.session:
+        if self._provide_session and self.session:
             await self.session.close()
             self.session = None
 
@@ -93,8 +96,9 @@ class Client:
     async def _get_json(self, url: str) -> dict:
         if self.session is None:
             raise NoSessionError()
-        async with self.session.get(url) as resp:
-            resp.raise_for_status()
+        async with self.session.get(url, headers=self.headers) as resp:
+            if resp.status != 200:
+                raise AppError(f"Failed to get JSON from {url}: {resp.status} {await resp.text()}")
             return await resp.json()
 
     async def _download_file(self, url: str):
@@ -107,7 +111,8 @@ class Client:
         out_path = temp_dir / Path(url).name
         logger.debug(f"Downloading file from {url} to {out_path}")
         async with self.session.get(url, headers=self.headers) as r:
-            r.raise_for_status()
+            if r.status != 200:
+                raise AppError(f"Failed to download file from {url}: {r.status} {await r.text()}")
             data = await r.read()
         async with aiofiles.open(out_path, "wb") as f:
             await f.write(data)
@@ -273,6 +278,27 @@ class Client:
             if delta not in (0, step_v):
                 raise ValueError(f"Parameter '{name}' ({label}) is not aligned with step {step_v}")
 
+    def _matches_type(self, value: Any, expected_pytype: Any) -> bool:
+        t = expected_pytype.get("type") if isinstance(expected_pytype, dict) else str(expected_pytype)
+        if not t:
+            return True
+        t = t.lower().split("(")[0]
+        type_map = {
+            "str": str,
+            "int": int,
+            "float": (int, float),
+            "bool": bool,
+            "list": (list, tuple),
+            "sequence": (list, tuple),
+            "tuple": (list, tuple),
+            "dict": dict,
+            "mapping": dict,
+        }
+        pytype = type_map.get(t)
+        if pytype:
+            return isinstance(value, pytype) and not (t in ("int", "float") and isinstance(value, bool))
+        return type(value).__name__.lower() == t
+
     async def predict(
         self,
         *args,
@@ -286,7 +312,8 @@ class Client:
         if self.session is None:
             raise NoSessionError()
         if headers:
-            self.session.headers.update(headers)
+            # merge headers
+            self.headers = {**self.headers, **headers}
         base = self._resolve_base(src) if src else self.base
         if not base:
             raise ValueError("Source URL or repo name must be provided in Client or predict() call.")
@@ -316,28 +343,6 @@ class Client:
         unexpected = set(kwargs.keys()) - set(param_names)
         if unexpected:
             raise TypeError(f"Unexpected parameters for {api_name}: {sorted(unexpected)}")
-
-        def _matches_type(value: Any, expected_pytype: Any) -> bool:
-            t = expected_pytype.get("type") if isinstance(expected_pytype, dict) else str(expected_pytype)
-            if not t:
-                return True
-            t = t.lower().split("(")[0]
-            type_map = {
-                "str": str,
-                "int": int,
-                "float": (int, float),
-                "bool": bool,
-                "list": (list, tuple),
-                "sequence": (list, tuple),
-                "tuple": (list, tuple),
-                "dict": dict,
-                "mapping": dict,
-            }
-            pytype = type_map.get(t)
-            if pytype:
-                return isinstance(value, pytype) and not (t in ("int", "float") and isinstance(value, bool))
-            return type(value).__name__.lower() == t
-
         input_data = []
         args_iter = iter(args)
         for p in params_list:
@@ -358,22 +363,19 @@ class Client:
                     input_data.append(default)
                     continue
             # Validate type
-            if not _matches_type(val, expected):
+            if not self._matches_type(val, expected):
                 expected_t = expected.get("type") if isinstance(expected, dict) else expected
                 raise TypeError(
                     f"Parameter '{name}' expects type '{expected_t}' but got '{type(val).__name__}'",
                 )
-
             # Validate numbers
             if isinstance(val, (int, float)):
                 label = p.get("label")
                 self._validate_number(name, val, label, base)
-
             # Handle file uploads
             if isinstance(val, dict) and val.get("meta", {}).get("_type") == "gradio.FileData":
                 if "url" not in val:
                     val = await self._upload_local_file(val, base)
-
             input_data.append(val)
         logger.debug(f"Resolved input data: {input_data}")
         session_hash = uuid.uuid4().hex
@@ -384,7 +386,7 @@ class Client:
             if resp.status != 200:
                 raise AppError(f"Queue join failed: {resp.status} {await resp.text()}")
         data = {}
-        async with self.session.get(stream_url) as resp:
+        async with self.session.get(stream_url, headers=self.headers) as resp:
             async for raw in resp.content:
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if not line.startswith("data:"):
@@ -392,7 +394,7 @@ class Client:
                 try:
                     data: dict = json.loads(line[5:].strip())
                 except json.JSONDecodeError:
-                    print(line, "is not json")
+                    logger.warning(f"{line} is not json")
                     continue
                 msg = data.get("msg")
                 if msg == "estimation":

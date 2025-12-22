@@ -8,7 +8,7 @@
 
 ---
 
-### Features
+## Features
 
 - **Fast & Async** – built on top of `aiohttp` and `aiofiles`, thats all
 - **Smart Parameter Checking** – validates types, min/max/step before sending
@@ -36,6 +36,21 @@ and perform parameter validation before sending data to the server.
 - Available functions: "handle_file", "client.predict" and "client.view_api".
 - Client functions are async and must be awaited.
 - The syntax is exacly the same as in official gradio_client.
+
+### New in 1.0.1
+You can pass existing session to Client, to reuse it.
+```py
+import aiohttp
+from noob_gradio import Client
+
+async def main():
+    session = aiohttp.ClientSession()
+    client = Client("url", session=session)
+    result = await client.predict(kwargs)
+    print(result)
+    # in on_close or similar event/function, at exit
+    await session.close()
+```
 
 ### Example
 ```py

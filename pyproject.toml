@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noob_gradio"
-version = "1.0.0"
+dynamic = ["version"]
 description = "A lightweight async alternative to gradio_client without heavy dependencies."
 authors = [{ name = "Noob" }]
 readme = "README.md"
@@ -28,3 +28,6 @@ Issues = "https://github.com/Noob-Lol/noob-gradio/issues"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.setuptools.dynamic]
+version = {attr = "noob_gradio.__version__"}
