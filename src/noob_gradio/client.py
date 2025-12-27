@@ -47,6 +47,7 @@ class Client:
         headers: dict[str, str] | None = None,
         download_files: str | Path | Literal[False] = DEFAULT_TEMP_DIR,
         session: aiohttp.ClientSession | None = None,
+        timeout: int = 300,
     ):
         # Support both full URLs and repo names like "black-forest-labs/FLUX.1-schnell"
         self.base = self._resolve_base(src) if src else None
@@ -68,6 +69,7 @@ class Client:
             self.download_dir.mkdir(parents=True, exist_ok=True)
             if not self.download_dir.is_dir():
                 raise ValueError(f"Path: {self.download_dir} is not a directory.")
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
 
     def _resolve_base(self, src: str):
         if is_http_url_like(src):
@@ -103,7 +105,7 @@ class Client:
     async def _get_json(self, url: str) -> dict:
         if self.session is None:
             raise NoSessionError()
-        async with self.session.get(url, headers=self.headers) as resp:
+        async with self.session.get(url, headers=self.headers, timeout=self.timeout) as resp:
             if resp.status != 200:
                 raise AppError(f"Failed to get JSON from {url}: {resp.status} {await resp.text()}")
             return await resp.json()
@@ -117,7 +119,7 @@ class Client:
         temp_dir.mkdir(exist_ok=True, parents=True)
         out_path = temp_dir / Path(url).name
         logger.debug(f"Downloading file from {url} to {out_path}")
-        async with self.session.get(url, headers=self.headers) as r:
+        async with self.session.get(url, headers=self.headers, timeout=self.timeout) as r:
             if r.status != 200:
                 raise AppError(f"Failed to download file from {url}: {r.status} {await r.text()}")
             data = await r.read()
@@ -260,7 +262,7 @@ class Client:
         # field name must be 'files'
         form.add_field("files", await aiofiles.open(path, "rb"), filename=name, content_type="application/octet-stream")
         upload_url = f"{base}/gradio_api/upload"
-        async with self.session.post(upload_url, headers=self.headers, data=form) as resp:
+        async with self.session.post(upload_url, data=form, headers=self.headers, timeout=self.timeout) as resp:
             result = await resp.json()
             if resp.status != 200:
                 raise AppError(f"Upload failed {resp.status}: {result}")
@@ -389,11 +391,11 @@ class Client:
         payload = {"fn_index": fn_index, "session_hash": session_hash, "data": input_data}
         join_url = f"{base}/gradio_api/queue/join"
         stream_url = f"{base}/gradio_api/queue/data?session_hash={session_hash}"
-        async with self.session.post(join_url, json=payload) as resp:
+        async with self.session.post(join_url, json=payload, timeout=self.timeout) as resp:
             if resp.status != 200:
                 raise AppError(f"Queue join failed: {resp.status} {await resp.text()}")
         data = {}
-        async with self.session.get(stream_url, headers=self.headers) as resp:
+        async with self.session.get(stream_url, headers=self.headers, timeout=self.timeout) as resp:
             async for raw in resp.content:
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if not line.startswith("data:"):
