@@ -30,7 +30,7 @@ async def test_get_json(monkeypatch):
     client = Client("https://example.com")
     await client.connect()
 
-    def fake_get(url):
+    def fake_get(url, **kwargs):
         class FakeResp:
             status = 200
 
@@ -79,7 +79,7 @@ async def test_predict_success(monkeypatch):
 
     async def fake_resolve(api_name, base): return 0
 
-    def fake_post(url, json):
+    def fake_post(url, json, **kwargs):
         class FakeResp:
             status = 200
 
@@ -107,7 +107,7 @@ async def test_predict_success(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): pass
 
-    def fake_get(url):
+    def fake_get(url, **kwargs):
         return FakeStreamResp()
 
     async with client:
