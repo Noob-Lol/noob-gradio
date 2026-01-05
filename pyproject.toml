@@ -12,7 +12,7 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9",
-    "aiofiles>=23.2"
+    "anyio>=3.7",
 ]
 keywords = ["gradio", "async", "client", "huggingface", "api"]
 classifiers = [

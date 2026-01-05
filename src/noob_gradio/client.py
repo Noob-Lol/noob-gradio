@@ -2,14 +2,14 @@ import json
 import logging
 import os
 import uuid
-from pathlib import Path
+from pathlib import Path as SyncPath  # For sync operations
 from tempfile import gettempdir
 from typing import Any, Literal
 
-import aiofiles
 import aiohttp
+from anyio import Path as AsyncPath  # For async operations, named for clarity
 
-DEFAULT_TEMP_DIR = os.getenv("GRADIO_TEMP_DIR") or str(Path(gettempdir()) / "gradio")
+DEFAULT_TEMP_DIR = os.getenv("GRADIO_TEMP_DIR") or str(SyncPath(gettempdir()) / "gradio")
 logger = logging.getLogger(__name__)
 
 
@@ -26,14 +26,14 @@ def is_http_url_like(s: str):
     return s.startswith(("http://", "https://"))
 
 
-def handle_file(filepath_or_url: str | Path):
+def handle_file(filepath_or_url: str | os.PathLike[str]):
     """Prepare a file input for Gradio API calls."""
     s = str(filepath_or_url)
     data = {"path": s, "meta": {"_type": "gradio.FileData"}}
     if is_http_url_like(s):
         return {**data, "orig_name": s.split("/")[-1], "url": s}
-    elif Path(s).exists():
-        return {**data, "orig_name": Path(s).name}
+    elif (p := SyncPath(s)).exists():
+        return {**data, "orig_name": p.name}
     else:
         raise ValueError(f"File {s} does not exist on local filesystem and is not a valid URL.")
 
@@ -45,7 +45,7 @@ class Client:
         src: str | None = None,
         hf_token: str | None = None,
         headers: dict[str, str] | None = None,
-        download_files: str | Path | Literal[False] = DEFAULT_TEMP_DIR,
+        download_files: str | os.PathLike[str] | Literal[False] = DEFAULT_TEMP_DIR,
         session: aiohttp.ClientSession | None = None,
         timeout: int = 300,
     ):
@@ -61,8 +61,8 @@ class Client:
         if self.hf_token:
             self.headers["x-hf-authorization"] = f"Bearer {self.hf_token}"
         self.download_dir = (
-            Path(download_files)
-            if isinstance(download_files, (str, Path))
+            SyncPath(download_files)
+            if isinstance(download_files, (str, os.PathLike))
             else None
         )
         if self.download_dir:
@@ -115,16 +115,16 @@ class Client:
             return url
         if not self.session:
             raise NoSessionError()
-        temp_dir = self.download_dir / uuid.uuid4().hex
-        temp_dir.mkdir(exist_ok=True, parents=True)
-        out_path = temp_dir / Path(url).name
+        # make path async
+        temp_dir = AsyncPath(self.download_dir) / uuid.uuid4().hex
+        await temp_dir.mkdir(exist_ok=True, parents=True)
+        out_path = temp_dir / SyncPath(url).name
         logger.debug(f"Downloading file from {url} to {out_path}")
         async with self.session.get(url, headers=self.headers, timeout=self.timeout) as r:
             if r.status != 200:
                 raise AppError(f"Failed to download file from {url}: {r.status} {await r.text()}")
             data = await r.read()
-        async with aiofiles.open(out_path, "wb") as f:
-            await f.write(data)
+        await out_path.write_bytes(data)
         return str(out_path)
 
     async def _resolve_fn_index(self, api_name: str, base: str) -> int | None:
@@ -255,12 +255,12 @@ class Client:
         path = filedict.get("path")
         if not path:
             raise ValueError("filedict has no 'path' to upload")
-        name = filedict.get("orig_name") or Path(path).name
+        name = filedict.get("orig_name") or SyncPath(path).name
         if self.session is None:
             raise NoSessionError()
         form = aiohttp.FormData()
         # field name must be 'files'
-        form.add_field("files", await aiofiles.open(path, "rb"), filename=name, content_type="application/octet-stream")
+        form.add_field("files", await AsyncPath(path).read_bytes(), filename=name, content_type="application/octet-stream")
         upload_url = f"{base}/gradio_api/upload"
         async with self.session.post(upload_url, data=form, headers=self.headers, timeout=self.timeout) as resp:
             result = await resp.json()
