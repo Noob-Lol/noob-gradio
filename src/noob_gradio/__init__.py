@@ -1,4 +1,5 @@
+__version__ = "1.2.0"
+
 from .client import AppError, Client, NoSessionError, handle_file
 
-__all__ = ["Client", "handle_file", "AppError", "NoSessionError"]
-__version__ = "1.1.0"
+__all__ = ["AppError", "Client", "NoSessionError", "__version__", "handle_file"]
