@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class AppError(RuntimeError):
-    pass
+    """Base class for errors raised by the client."""
 
 
 class NoSessionError(AppError):
@@ -31,15 +31,16 @@ def handle_file(filepath_or_url: str | os.PathLike[str]):
     s = str(filepath_or_url)
     data = {"path": s, "meta": {"_type": "gradio.FileData"}}
     if is_http_url_like(s):
-        return {**data, "orig_name": s.split("/")[-1], "url": s}
-    elif (p := SyncPath(s)).exists():
+        return {**data, "orig_name": s.rsplit("/", maxsplit=1)[-1], "url": s}
+    if (p := SyncPath(s)).exists():
         return {**data, "orig_name": p.name}
-    else:
-        raise ValueError(f"File {s} does not exist on local filesystem and is not a valid URL.")
+    msg = f"File {s} does not exist on local filesystem and is not a valid URL."
+    raise ValueError(msg)
 
 
 class Client:
     """The client for interacting with a Gradio app."""
+
     def __init__(
         self,
         src: str | None = None,
@@ -47,8 +48,13 @@ class Client:
         headers: dict[str, str] | None = None,
         download_files: str | os.PathLike[str] | Literal[False] = DEFAULT_TEMP_DIR,
         session: aiohttp.ClientSession | None = None,
-        timeout: int = 300,
+        **kwargs: Any,
     ):
+        """A lightweight client for interacting with a Gradio app.
+
+        optional kwargs:
+            timeout: The timeout for requests, in seconds.
+        """
         # Support both full URLs and repo names like "black-forest-labs/FLUX.1-schnell"
         self.base = self._resolve_base(src) if src else None
         self._provide_session = session is None
@@ -68,18 +74,29 @@ class Client:
         if self.download_dir:
             self.download_dir.mkdir(parents=True, exist_ok=True)
             if not self.download_dir.is_dir():
-                raise ValueError(f"Path: {self.download_dir} is not a directory.")
+                msg = f"Path: {self.download_dir} is not a directory."
+                raise ValueError(msg)
+        timeout = kwargs.pop("timeout", 300)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
-    def _resolve_base(self, src: str):
+    @staticmethod
+    def _resolve_base(src: str):
         if is_http_url_like(src):
             return src.rstrip("/")
-        else:
-            return (
-                "https://"
-                + src.lower().replace("/", "-").replace(".", "-")
-                + ".hf.space"
-            )
+        return (
+            "https://"
+            + src.lower().replace("/", "-").replace(".", "-")
+            + ".hf.space"
+        )
+
+    def _get_session(self):
+        """Checks if self.session is set and is correct type. Returns self.session. Raises NoSessionError or TypeError otherwise."""
+        if not self.session:
+            raise NoSessionError
+        if not isinstance(self.session, aiohttp.ClientSession):
+            msg = f"self.session must be an aiohttp.ClientSession, got: {self.session.__class__.__name__}"
+            raise TypeError(msg)
+        return self.session
 
     async def connect(self):
         if not self.session and self._provide_session:
@@ -103,26 +120,26 @@ class Client:
         await self.close()
 
     async def _get_json(self, url: str) -> dict:
-        if self.session is None:
-            raise NoSessionError()
-        async with self.session.get(url, headers=self.headers, timeout=self.timeout) as resp:
+        session = self._get_session()
+        async with session.get(url, headers=self.headers, timeout=self.timeout) as resp:
             if resp.status != 200:
-                raise AppError(f"Failed to get JSON from {url}: {resp.status} {await resp.text()}")
+                msg = f"Failed to get JSON from {url}: {resp.status} {await resp.text()}"
+                raise AppError(msg)
             return await resp.json()
 
     async def _download_file(self, url: str):
         if not self.download_dir:
             return url
-        if not self.session:
-            raise NoSessionError()
+        session = self._get_session()
         # make path async
         temp_dir = AsyncPath(self.download_dir) / uuid.uuid4().hex
         await temp_dir.mkdir(exist_ok=True, parents=True)
         out_path = temp_dir / SyncPath(url).name
-        logger.debug(f"Downloading file from {url} to {out_path}")
-        async with self.session.get(url, headers=self.headers, timeout=self.timeout) as r:
+        logger.debug("Downloading file from %s to %s", url, out_path)
+        async with session.get(url, headers=self.headers, timeout=self.timeout) as r:
             if r.status != 200:
-                raise AppError(f"Failed to download file from {url}: {r.status} {await r.text()}")
+                msg = f"Failed to download file from {url}: {r.status} {await r.text()}"
+                raise AppError(msg)
             data = await r.read()
         await out_path.write_bytes(data)
         return str(out_path)
@@ -155,8 +172,8 @@ class Client:
             cache["api_info"] = await self._get_json(f"{base}/gradio_api/info?serialize=False")
         return cache["api_info"]
 
+    @staticmethod
     def _render_endpoints_info(
-        self,
         name_or_index: str | int,
         endpoints_info: dict[str, list],
     ) -> str:
@@ -166,7 +183,7 @@ class Client:
         ]
         rendered_parameters = ", ".join(parameter_names)
         if rendered_parameters:
-            rendered_parameters = rendered_parameters + ", "
+            rendered_parameters += ", "
         return_values = [p["label"] for p in endpoints_info["returns"]]
         rendered_return_values = ", ".join(return_values)
         if len(return_values) > 1:
@@ -214,7 +231,7 @@ class Client:
 
     async def view_api(
         self,
-        src: str | None = None,
+        src: str | None = None, *,
         all_endpoints: bool | None = None,
         print_info: bool = True,
         return_format: Literal["dict", "str"] | None = None,
@@ -222,7 +239,8 @@ class Client:
         """View the API information of the Gradio app."""
         base = self._resolve_base(src) if src else self.base
         if base is None:
-            raise ValueError("Client source URL is not set.")
+            msg = "Client source URL is not set."
+            raise ValueError(msg)
         api_info = await self._load_api_info(base)
         num_named_endpoints = len(api_info["named_endpoints"])
         num_unnamed_endpoints = len(api_info["unnamed_endpoints"])
@@ -248,46 +266,52 @@ class Client:
             print(human_info)
         if return_format == "str":
             return human_info
-        elif return_format == "dict":
+        if return_format == "dict":
             return api_info
+        return None
 
     async def _upload_local_file(self, filedict: dict, base: str):
         path = filedict.get("path")
         if not path:
-            raise ValueError("filedict has no 'path' to upload")
+            msg = "filedict has no 'path' to upload"
+            raise ValueError(msg)
         name = filedict.get("orig_name") or SyncPath(path).name
-        if self.session is None:
-            raise NoSessionError()
+        session = self._get_session()
         form = aiohttp.FormData()
         # field name must be 'files'
         form.add_field("files", await AsyncPath(path).read_bytes(), filename=name, content_type="application/octet-stream")
         upload_url = f"{base}/gradio_api/upload"
-        async with self.session.post(upload_url, data=form, headers=self.headers, timeout=self.timeout) as resp:
+        async with session.post(upload_url, data=form, headers=self.headers, timeout=self.timeout) as resp:
             result = await resp.json()
             if resp.status != 200:
-                raise AppError(f"Upload failed {resp.status}: {result}")
+                msg = f"Upload failed {resp.status}: {result}"
+                raise AppError(msg)
         uploaded_path = result[0]
-        logger.debug(f"Uploaded file to {uploaded_path}")
+        logger.debug("Uploaded file to %s", uploaded_path)
         return {"path": uploaded_path, "orig_name": name, "meta": {"_type": "gradio.FileData"}}
 
-    def _validate_number(self, name: str, val: float, label: str, base: str):
+    def _validate_number(self, name: str | None, val: float, label: str | None, base: str):
         """Check if input is within expected min/max/step constraints."""
         c = self._space_cache.get(base, {}).get("param_constraints", {}).get(label)
         if not c:
             return
         min_v, max_v = c.get("min"), c.get("max")
         if min_v is not None and val < min_v:
-            raise ValueError(f"Parameter '{name}' ({label}) is below minimum ({val} < {min_v})")
+            msg = f"Parameter '{name}' ({label}) is below minimum ({val} < {min_v})"
+            raise ValueError(msg)
         if max_v is not None and val > max_v:
-            raise ValueError(f"Parameter '{name}' ({label}) exceeds maximum ({val} > {max_v})")
+            msg = f"Parameter '{name}' ({label}) exceeds maximum ({val} > {max_v})"
+            raise ValueError(msg)
         step_v = c.get("step")
         if step_v and isinstance(step_v, (int, float)) and step_v > 0:
             # step validation only for finite steps
             delta = abs((val - min_v) % step_v) if min_v is not None else val % step_v
-            if delta not in (0, step_v):
-                raise ValueError(f"Parameter '{name}' ({label}) is not aligned with step {step_v}")
+            if delta not in {0, step_v}:
+                msg = f"Parameter '{name}' ({label}) is not aligned with step {step_v}"
+                raise ValueError(msg)
 
-    def _matches_type(self, value: Any, expected_pytype: Any) -> bool:
+    @staticmethod
+    def _matches_type(value: Any, expected_pytype: Any) -> bool:
         t = expected_pytype.get("type") if isinstance(expected_pytype, dict) else str(expected_pytype)
         if not t:
             return True
@@ -305,34 +329,49 @@ class Client:
         }
         pytype = type_map.get(t)
         if pytype:
-            return isinstance(value, pytype) and not (t in ("int", "float") and isinstance(value, bool))
+            return isinstance(value, pytype) and not (t in {"int", "float"} and isinstance(value, bool))
         return type(value).__name__.lower() == t
 
-    async def predict(
-        self,
-        *args,
-        api_name: str,
-        fn_index: int | None = None,
-        src: str | None = None,
-        headers: dict | None = None,
-        **kwargs: Any,
-    ) -> list[Any]:
-        """Call the Gradio app's predict function with given inputs. Must be awaited to get results. Now supports src override per call."""
-        if self.session is None:
-            raise NoSessionError()
-        if headers:
-            # merge headers
-            self.headers = {**self.headers, **headers}
-        base = self._resolve_base(src) if src else self.base
-        if not base:
-            raise ValueError("Source URL or repo name must be provided in Client or predict() call.")
-        api_info = await self._load_api_info(base)
+    async def _resolve_param_value(self, p: dict, args_iter, kwargs: dict, base: str) -> Any:
+        name = p.get("parameter_name") or p.get("name")
+        has_default = p.get("parameter_has_default", True)
+        default = p.get("parameter_default")
+        expected = p.get("python_type") or p.get("type")
+        try:
+            # Try to get from positional args first
+            val = next(args_iter)
+        except StopIteration:
+            # Fall back to kwargs or default
+            if name and name in kwargs:
+                val = kwargs[name]
+            else:
+                if not has_default:
+                    msg = f"Missing required parameter: {name}"
+                    raise ValueError(msg) from None
+                return default
+        # Validate type
+        if not self._matches_type(val, expected):
+            expected_t = expected.get("type") if isinstance(expected, dict) else expected
+            msg = f"Parameter '{name}' expects type '{expected_t}' but got '{type(val).__name__}'"
+            raise TypeError(msg)
+        # Validate numbers
+        if isinstance(val, (int, float)):
+            label = p.get("label")
+            self._validate_number(name, val, label, base)
+        # Handle file uploads
+        if isinstance(val, dict) and val.get("meta", {}).get("_type") == "gradio.FileData" and "url" not in val:
+            val = await self._upload_local_file(val, base)
+        return val
+
+    async def _process_inputs(self, api_name: str, fn_index: int | None, base: str, args: tuple, kwargs: dict):
+        api_info: dict = await self._load_api_info(base)
         if fn_index is None:
             fn_index = await self._resolve_fn_index(api_name, base)
         if fn_index is None:
-            raise AppError(f"Could not resolve fn_index for {api_name}")
+            msg = f"Could not resolve fn_index for {api_name}"
+            raise AppError(msg)
         # Get expected parameter order
-        params_list = []
+        params_list: list[dict] = []
         named = api_info.get("named_endpoints", {}) or {}
         if api_name in named:
             params_list = named[api_name].get("parameters", [])
@@ -342,93 +381,111 @@ class Client:
             params_list = params_entry.get("inputs", [])
         # collect canonical parameter names (parameter_name for new API, name for old)
         param_names = [p.get("parameter_name") or p.get("name") or f"arg{i}" for i, p in enumerate(params_list)]
-        logger.debug(f"Expected parameters for {api_name} (fn_index={fn_index}): {param_names}")
+        logger.debug("Expected parameters for %s (fn_index=%s): %s", api_name, fn_index, param_names)
         # Check for mixing args and kwargs for same parameter
         if args and kwargs:
             overlap = set(param_names[:len(args)]) & set(kwargs.keys())
             if overlap:
-                raise TypeError(f"Got multiple values for parameters: {sorted(overlap)}")
-        # raise on any unexpected kwargs
+                msg = f"Got multiple values for parameters: {sorted(overlap)}"
+                raise TypeError(msg)
         unexpected = set(kwargs.keys()) - set(param_names)
         if unexpected:
-            raise TypeError(f"Unexpected parameters for {api_name}: {sorted(unexpected)}")
+            msg = f"Unexpected parameters for {api_name}: {sorted(unexpected)}"
+            raise TypeError(msg)
         input_data = []
         args_iter = iter(args)
         for p in params_list:
-            name = p.get("parameter_name") or p.get("name")
-            has_default = p.get("parameter_has_default", True)
-            default = p.get("parameter_default", None)
-            expected = p.get("python_type") or p.get("type")
-            try:
-                # Try to get from positional args first
-                val = next(args_iter)
-            except StopIteration:
-                # Fall back to kwargs or default
-                if name in kwargs:
-                    val = kwargs[name]
-                else:
-                    if not has_default:
-                        raise ValueError(f"Missing required parameter: {name}") from None
-                    input_data.append(default)
-                    continue
-            # Validate type
-            if not self._matches_type(val, expected):
-                expected_t = expected.get("type") if isinstance(expected, dict) else expected
-                raise TypeError(
-                    f"Parameter '{name}' expects type '{expected_t}' but got '{type(val).__name__}'",
-                )
-            # Validate numbers
-            if isinstance(val, (int, float)):
-                label = p.get("label")
-                self._validate_number(name, val, label, base)
-            # Handle file uploads
-            if isinstance(val, dict) and val.get("meta", {}).get("_type") == "gradio.FileData":
-                if "url" not in val:
-                    val = await self._upload_local_file(val, base)
+            val = await self._resolve_param_value(p, args_iter, kwargs, base)
             input_data.append(val)
-        logger.debug(f"Resolved input data: {input_data}")
+        logger.debug("Resolved input data: %s", input_data)
+        return fn_index, input_data
+
+    async def _download_results(self, result: list) -> list:
+        for i, item in enumerate(result):
+            if isinstance(item, dict) and "url" in item:
+                local_path = await self._download_file(item["url"])
+                result[i] = local_path
+        return result
+
+    async def _process_completion(self, data: dict[str, dict]) -> list[Any]:
+        success = data.get("success")
+        output = data.get("output", {})
+        if not success:
+            error_info = output.get("error")
+            if error_info and error_info != "null":
+                logger.debug("Processing failed: %s", error_info)
+                raise AppError(error_info)
+            logger.debug("Processing failed: %s", data)
+            msg = "Something went wrong in gradio app."
+            raise AppError(msg)
+
+        result = output.get("data", [])
+        # download any files if download_files is not False
+        if self.download_dir:
+            result = await self._download_results(result)
+        logger.info("Processing completed successfully.")
+        return result
+
+    async def _handle_sse_msg(self, data: dict) -> list[Any] | None:
+        msg = data.get("msg")
+        if msg == "estimation":
+            logger.debug("Estimated wait: %s", data.get("rank_eta"))
+        elif msg == "process_starts":
+            logger.debug("Processing started...")
+        elif msg == "process_completed":
+            return await self._process_completion(data)
+        elif msg == "close_stream":
+            msg = "Stream closed before completion."
+            raise AppError(msg)
+        return None
+
+    async def _await_prediction(self, session: aiohttp.ClientSession, base: str, fn_index: int, input_data: list) -> list[Any]:
         session_hash = uuid.uuid4().hex
         payload = {"fn_index": fn_index, "session_hash": session_hash, "data": input_data}
         join_url = f"{base}/gradio_api/queue/join"
         stream_url = f"{base}/gradio_api/queue/data?session_hash={session_hash}"
-        async with self.session.post(join_url, json=payload, timeout=self.timeout) as resp:
+
+        async with session.post(join_url, json=payload, timeout=self.timeout) as resp:
             if resp.status != 200:
-                raise AppError(f"Queue join failed: {resp.status} {await resp.text()}")
+                msg = f"Queue join failed: {resp.status} {await resp.text()}"
+                raise AppError(msg)
+
         data = {}
-        async with self.session.get(stream_url, headers=self.headers, timeout=self.timeout) as resp:
+        async with session.get(stream_url, headers=self.headers, timeout=self.timeout) as resp:
             async for raw in resp.content:
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if not line.startswith("data:"):
                     continue
                 try:
-                    data: dict = json.loads(line[5:].strip())
+                    data = json.loads(line[5:].strip())
                 except json.JSONDecodeError:
-                    logger.warning(f"{line} is not json")
+                    logger.warning("%s is not json", line)
                     continue
-                msg = data.get("msg")
-                if msg == "estimation":
-                    logger.debug(f"Estimated wait: {data.get('rank_eta')}")
-                elif msg == "process_starts":
-                    logger.debug("Processing started...")
-                elif msg == "process_completed":
-                    success = data.get("success")
-                    output = data.get("output", {})
-                    if not success:
-                        error_info = output.get("error")
-                        if error_info and error_info != "null":
-                            logger.debug(f"Processing failed: {error_info}")
-                            raise AppError(error_info)
-                        logger.debug(f"Processing failed: {data}")
-                        raise AppError("Something went wrong in gradio app.")
-                    result = output.get("data", [])
-                    # download any files if download_files is not False
-                    if self.download_dir:
-                        for i, item in enumerate(result):
-                            if isinstance(item, dict) and "url" in item:
-                                local_path = await self._download_file(item["url"])
-                                result[i] = local_path
-                    logger.info("Processing completed successfully.")
+
+                result = await self._handle_sse_msg(data)
+                if result is not None:
                     return result
-                elif msg == "close_stream":
-                    raise AppError("Stream closed before completion.")
-        raise AppError(f"No process_completed message received. Last data: {data}")
+
+        msg = f"No process_completed message received. Last data: {data}"
+        raise AppError(msg)
+
+    async def predict(
+        self,
+        *args: Any,
+        api_name: str,
+        fn_index: int | None = None,
+        src: str | None = None,
+        headers: dict | None = None,
+        **kwargs: Any,
+    ) -> list[Any]:
+        """Call the Gradio app's predict function with given inputs. Must be awaited to get results. Now supports src override per call."""
+        session = self._get_session()
+        if headers:
+            self.headers.update(headers)
+        base = self._resolve_base(src) if src else self.base
+        if not base:
+            msg = "Source URL or repo name must be provided in Client or predict() call."
+            raise ValueError(msg)
+
+        fn_index, input_data = await self._process_inputs(api_name, fn_index, base, args, kwargs)
+        return await self._await_prediction(session, base, fn_index, input_data)
