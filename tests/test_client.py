@@ -1,6 +1,7 @@
 import aiohttp
 import pytest
-from noob_gradio.client import Client, NoSessionError, handle_file
+
+from noob_gradio import Client, NoSessionError, handle_file
 
 
 @pytest.mark.asyncio
@@ -122,4 +123,12 @@ async def test_predict_success(monkeypatch):
 async def test_session_required():
     client = Client("https://example.com")
     with pytest.raises(NoSessionError):
+        await client._get_json("https://example.com/test")
+
+
+@pytest.mark.asyncio
+async def test_session_closed():
+    client = Client("https://example.com")
+    client.session = "not a session"  # type: ignore
+    with pytest.raises(TypeError):
         await client._get_json("https://example.com/test")
