@@ -10,7 +10,7 @@
 
 ## Features
 
-- **Fast & Async** – built on top of `aiohttp` and `aiofiles`, thats all
+- **Fast & Async** – built on top of `aiohttp` and `anyio`, thats all
 - **Smart Parameter Checking** – validates types, min/max/step before sending
 - **Tiny Dependency Footprint** – no heavy `huggingface_hub` and it's reqiurements (a lot)
 - **Drop-in familiar syntax** – like the official client, but simpler and async
